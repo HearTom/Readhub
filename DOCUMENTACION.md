@@ -551,15 +551,160 @@ El script revierte todos los cambios al finalizar (rollback intencional).
 - [x] 36 scripts de validación de RLS
 - [x] Migraciones aplicadas en Supabase
 
-### Pendiente (fases posteriores) 🔜
-- [ ] Completar variables de entorno en `.env.local`
-- [ ] Instalar dependencias (`npm install`)
-- [ ] Pantallas de autenticación (login, registro)
-- [ ] CRUD de artículos (crear, editar, publicar)
-- [ ] Endpoints API (Route Handlers)
-- [ ] Componentes UI (Shadcn: Button, Card, Form, etc.)
-- [ ] Hooks de datos (useArticles, useProfile, etc.)
-- [ ] Integración con Supabase Storage (subida de archivos)
-- [ ] Dashboard de escritor (estadísticas, vistas)
-- [ ] Generación de tipos desde Supabase (`supabase gen types typescript`)
-- [ ] Configurar buckets de Storage para documentos e imágenes
+> **Nota (sesión 4):** las secciones "Completado"/"Pendiente" de arriba
+> corresponden al estado al cierre de la sesión 2 (infraestructura base).
+> El MVP completo (autenticación, CRUD de artículos, comentarios, likes,
+> views, subida a Storage) y el sistema RAG completo se implementaron en
+> las sesiones 3 y 4 respectivamente — ver la sección 10 para el estado y
+> la arquitectura actuales.
+
+### Pendiente original de sesión 2 (ya completado en sesiones posteriores) ✅
+- [x] Completar variables de entorno en `.env.local`
+- [x] Instalar dependencias (`npm install`)
+- [x] Pantallas de autenticación (login, registro)
+- [x] CRUD de artículos (crear, publicar — editar/eliminar no implementados, ver sección 10.7)
+- [x] Componentes UI (Shadcn: Button, Card, Form, etc.)
+- [x] Hooks de datos (useArticles, useAuth, useComments, useLikes, useUpload, useChat)
+- [x] Integración con Supabase Storage (subida de archivos)
+- [x] Configurar buckets de Storage para documentos e imágenes
+
+### Aún no implementado
+- [ ] Endpoints API REST versionados bajo `/api/v1/*` (quedaron como stubs vacíos; la app usa el patrón Hooks→Services→Supabase directo, más los Route Handlers específicos del RAG bajo `/api/chat` y `/api/index-article`)
+- [ ] Dashboard de escritor (estadísticas, vistas agregadas)
+- [ ] Generación de tipos desde Supabase (`supabase gen types typescript`) — los tipos de `types/database.ts` se mantienen a mano
+
+---
+
+## 10. Sistema RAG (Sesión 4)
+
+### 10.1 Resumen ejecutivo
+
+ReadHub incorpora un asistente conversacional que responde preguntas en
+lenguaje natural utilizando **exclusivamente** el contenido de los
+artículos publicados en la plataforma (Retrieval-Augmented Generation).
+El sistema fue construido incrementalmente a lo largo de 8 fases —
+infraestructura vectorial, embeddings, indexación automática, búsqueda
+semántica, constructor de contexto, servicio conversacional, interfaz de
+usuario, e integración/optimización final — cada una reutilizando
+estrictamente las anteriores, sin duplicar lógica.
+
+**Decisión de proveedor de IA**: el laboratorio especifica Claude como
+motor de generación, pero este proyecto no cuenta con una API key de
+Anthropic. Se sustituyó por **Hugging Face Inference API** para ambos
+roles — embeddings (`sentence-transformers/all-MiniLM-L6-v2`, 384
+dimensiones) y generación (`meta-llama/Llama-3.1-8B-Instruct`) —
+manteniendo el mismo principio arquitectónico que pedía el laboratorio:
+el proveedor queda completamente encapsulado en `lib/ai/`, y sustituirlo
+en el futuro (p. ej. por Claude) no requiere tocar ningún Service,
+Route Handler, Hook ni componente.
+
+### 10.2 Arquitectura de capas
+
+```
+components/chat/*  (ChatWindow, ChatMessage, ChatInput, SourcesList, LoadingMessage)
+        │
+        ▼
+hooks/useChat.ts, hooks/useUpload.ts (dispara indexación)
+        │  fetch()
+        ▼
+app/api/chat/route.ts, app/api/index-article/route.ts
+        │  (auth + transporte puro, sin lógica de negocio)
+        ▼
+services/chat.service.ts ──┬── services/vector-search.service.ts ── services/embedding.service.ts
+        │                  └── services/context-builder.service.ts (puro, sin I/O)
+        ▼
+lib/ai/{client,embeddings,generation,chunk-text}.ts, lib/documents/extract-text.ts
+        │
+        ▼
+Supabase (pgvector: article_chunks, match_article_chunks) + Hugging Face Inference API
+```
+
+### 10.3 Base de datos — infraestructura vectorial
+
+Migraciones (`supabase/migrations/20260709*.sql`, todas aditivas, ninguna
+migración ni política de sesiones 2-3 fue modificada):
+
+| Migración | Contenido |
+|---|---|
+| `..._add_vector_infrastructure` | `CREATE EXTENSION vector`, tabla `article_chunks`, índices |
+| `..._add_vector_search_infrastructure` | Políticas RLS + función `match_article_chunks()` |
+| `..._optimize_vector_infrastructure` | Extensión movida a esquema `extensions`; políticas optimizadas con `(select auth.uid())` |
+| `..._fix_match_article_chunks_search_path` | Corrección de `search_path` tras mover la extensión |
+
+**`public.article_chunks`**: `id`, `article_id` (FK → `articles.id` ON
+DELETE CASCADE — garantiza cero vectores huérfanos sin código de
+aplicación), `chunk_index`, `content`, `embedding vector(384)`,
+`created_at`. Índice HNSW (`vector_cosine_ops`) sobre `embedding`. RLS
+replica exactamente la visibilidad de `articles_select`
+(`is_public = TRUE OR author_id = auth.uid()`) vía `EXISTS (...)`.
+
+**`match_article_chunks(query_embedding, match_count, match_threshold)`**:
+`SECURITY INVOKER` (hereda RLS del llamador, no duplica la regla de
+visibilidad), devuelve el título del artículo ya unido para evitar N+1.
+
+### 10.4 Responsabilidad de cada módulo nuevo
+
+| Módulo | Responsabilidad única |
+|---|---|
+| `lib/ai/client.ts` | Instancia perezosa de `InferenceClient` (Hugging Face) |
+| `lib/ai/embeddings.ts` | Llamar `featureExtraction`, normalizar la forma de la respuesta |
+| `lib/ai/generation.ts` | Llamar `chatCompletion` (sin streaming); único lugar que conoce el modelo de generación |
+| `lib/ai/chunk-text.ts` | Fragmentar texto largo por párrafos, con solapamiento y corte en límite de palabra |
+| `lib/documents/extract-text.ts` | Extraer texto plano de TXT/PDF/DOC/DOCX (server-only) |
+| `services/embedding.service.ts` | Componer el texto del artículo, generar y persistir sus embeddings (`embedArticle`) |
+| `services/vector-search.service.ts` | Recibir una consulta, generar su embedding (reutilizando `embedding.service.ts`) y ejecutar la búsqueda por similitud |
+| `services/context-builder.service.ts` | Seleccionar, deduplicar, ordenar y limitar documentos; construir el prompt final (100% puro, sin I/O) |
+| `services/chat.service.ts` | Orquestar el flujo RAG completo; único punto de contacto con `lib/ai/generation.ts` |
+| `app/api/index-article/route.ts` | Disparar `embedArticle` tras publicar un artículo (autenticación + autorización de autoría) |
+| `app/api/chat/route.ts` | Exponer `askQuestion` a la UI (autenticación) |
+| `hooks/useChat.ts` | Estado de la conversación + revelado progresivo del texto ya recibido |
+| `components/chat/*` | Presentación pura; ninguno importa Supabase ni `lib/ai` |
+
+### 10.5 Flujo de ejecución de punta a punta
+
+```
+Publicar artículo (hooks/useUpload.ts)
+  → fetch /api/index-article → embedding.service.ts: descarga doc → extrae texto
+  → compone texto → fragmenta → embeddings (Hugging Face) → persiste en article_chunks
+
+Preguntar (components/chat/ChatInput.tsx)
+  → hooks/useChat.ts → fetch /api/chat → chat.service.ts:
+    vector-search.service.ts (embedding de la consulta + similarity search)
+    → context-builder.service.ts (selección + prompt)
+    → lib/ai/generation.ts (Llama-3.1-8B-Instruct)
+  → ChatResult { answer, sources, contextFound, metadata } → UI
+```
+
+Validado de extremo a extremo con datos reales (login real, artículo
+real con un dato ficticio distintivo, indexación real, pregunta real):
+la respuesta citó correctamente la fuente exacta publicada, y una
+pregunta sin relación con el contenido indexado obtuvo una respuesta
+honesta de "no tengo información", sin alucinar.
+
+### 10.6 Dependencias nuevas
+
+`@huggingface/inference`, `pdf-parse` (+ `@types/pdf-parse`), `mammoth`.
+Variable de entorno nueva: `HF_TOKEN` (server-only, sin prefijo
+`NEXT_PUBLIC_`).
+
+### 10.7 Decisiones y limitaciones conocidas
+
+- **Indexación automática solo en creación, no en edición**: no existe
+  `updateArticle` en ningún punto del proyecto — se decidió no inventar
+  esa funcionalidad (fuera del alcance de "indexación automática"). El
+  mismo endpoint `/api/index-article` ya soporta re-indexar un artículo
+  existente de forma idempotente (reemplaza sus chunks por completo) el
+  día que exista un flujo de edición.
+- **Sin streaming real de tokens**: `lib/ai/generation.ts` usa
+  `chatCompletion` (no `chatCompletionStream`) por restricción explícita
+  de la fase de interfaz. El "streaming" visible en la UI es un efecto
+  de revelado progresivo del lado del cliente sobre una respuesta ya
+  completa — ver `hooks/useChat.ts`.
+- **Historial de conversación no persistente**: vive en estado de React,
+  se pierde al recargar. El tipo `ChatViewMessage` ya tiene la forma que
+  necesitaría una futura tabla de historial.
+- **Acoplamiento 1:1 `article_chunks` → `articles`**: incorporar fuentes
+  de conocimiento que no sean artículos de ReadHub (documentos externos,
+  transcripciones, etc.) requeriría extender el esquema (columna
+  discriminadora o tabla separada) — no fue necesario para este
+  laboratorio.

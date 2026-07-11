@@ -58,13 +58,39 @@ export function useUpload(currentUser: User | null) {
         is_public: payload.isPublic ?? true,
       })
 
-      if (articleResult.error) {
+      if (articleResult.error !== null) {
         setStep('error')
         setError(articleResult.error)
         return articleResult
       }
 
       setStep('done')
+
+      // Indexación automática (RAG) — best-effort y no bloqueante: el
+      // artículo ya quedó publicado correctamente, así que un fallo aquí
+      // no debe revertir ni marcar como error el flujo de publicación
+      // (mismo criterio de resiliencia que registerView/likes).
+      try {
+        const indexResponse = await fetch('/api/index-article', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ articleId: articleResult.data.id }),
+        })
+        // response.ok se verifica solo para dejar rastro en consola — no
+        // bloquea ni marca como error el flujo de publicación (ver comentario
+        // de resiliencia arriba). Antes de esta revisión, un fallo HTTP
+        // (p. ej. 500 por error del proveedor de embeddings) pasaba
+        // completamente desapercibido porque solo el `catch` (fallo de red)
+        // dejaba algún rastro.
+        if (!indexResponse.ok) {
+          console.warn(`[useUpload] Indexación no exitosa (HTTP ${indexResponse.status}) para el artículo ${articleResult.data.id}`)
+        }
+      } catch {
+        // Falla silenciosa — la indexación puede reintentarse más adelante
+        // sin generar duplicados (embedding.service.ts reemplaza por completo
+        // los chunks existentes del artículo en cada ejecución).
+      }
+
       return articleResult
     },
     [client, currentUser],

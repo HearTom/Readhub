@@ -114,3 +114,70 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW
   EXECUTE FUNCTION public.handle_new_user();
+
+
+-- ============================================================
+-- SESIÓN 4 — INFRAESTRUCTURA VECTORIAL (RAG)
+-- Fuente de verdad real: supabase/migrations/20260709041149_*.sql
+-- a 20260709041422_*.sql. Solo estructura — sin lógica de negocio,
+-- sin Services/Hooks/Componentes todavía.
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS vector SCHEMA extensions;
+
+-- article_chunks: un fragmento de texto por fila (no un embedding por
+-- artículo completo), para soportar documentos largos y permitir que
+-- el futuro context-builder.service.ts ordene/limite entre múltiples
+-- fragmentos recuperados.
+CREATE TABLE public.article_chunks (
+  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  article_id  UUID        NOT NULL REFERENCES public.articles(id) ON DELETE CASCADE,
+  chunk_index INT         NOT NULL,
+  content     TEXT        NOT NULL,
+  embedding   vector(384) NOT NULL,  -- 384d: sentence-transformers/all-MiniLM-L6-v2 (Hugging Face)
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT article_chunks_unique_chunk UNIQUE (article_id, chunk_index)
+);
+
+CREATE INDEX idx_article_chunks_article_id ON public.article_chunks(article_id);
+
+-- Índice vectorial HNSW (no IVFFlat) — ver justificación en el informe
+-- técnico de la fase de infraestructura vectorial.
+CREATE INDEX idx_article_chunks_embedding_hnsw
+  ON public.article_chunks
+  USING hnsw (embedding vector_cosine_ops);
+
+-- Función SQL reutilizable de búsqueda por similitud coseno.
+-- SECURITY INVOKER: hereda la RLS del llamador (ver policies.sql).
+-- No se invoca todavía desde ningún Service.
+CREATE OR REPLACE FUNCTION public.match_article_chunks(
+  query_embedding vector(384),
+  match_count     INT   DEFAULT 5,
+  match_threshold FLOAT DEFAULT 0.3
+)
+RETURNS TABLE (
+  chunk_id      UUID,
+  article_id    UUID,
+  article_title TEXT,
+  chunk_index   INT,
+  content       TEXT,
+  similarity    FLOAT
+)
+LANGUAGE sql
+STABLE
+SECURITY INVOKER
+SET search_path = public, extensions
+AS $$
+  SELECT
+    ac.id,
+    ac.article_id,
+    a.title,
+    ac.chunk_index,
+    ac.content,
+    1 - (ac.embedding <=> query_embedding) AS similarity
+  FROM public.article_chunks ac
+  JOIN public.articles a ON a.id = ac.article_id
+  WHERE 1 - (ac.embedding <=> query_embedding) > match_threshold
+  ORDER BY ac.embedding <=> query_embedding
+  LIMIT match_count;
+$$;

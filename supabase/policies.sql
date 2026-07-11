@@ -155,3 +155,51 @@ CREATE POLICY "favorites_insert"
 CREATE POLICY "favorites_delete"
   ON public.favorites FOR DELETE
   USING (auth.uid() = user_id);
+
+
+-- ============================================================
+-- SESIÓN 4 — ARTICLE_CHUNKS (infraestructura vectorial RAG)
+-- Visibilidad idéntica a articles_select, replicada vía JOIN.
+-- Fuente de verdad real: supabase/migrations/20260709041204_*.sql
+-- y 20260709041322_*.sql (versión optimizada con (select auth.uid())).
+-- ============================================================
+
+CREATE POLICY "article_chunks_select"
+  ON public.article_chunks
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.articles
+      WHERE articles.id = article_chunks.article_id
+        AND (articles.is_public = TRUE OR articles.author_id = (SELECT auth.uid()))
+    )
+  );
+
+-- El indexado (fase posterior) se ejecuta bajo la sesión autenticada
+-- del propio autor (Route Handler con cookies del usuario, no un job
+-- con service-role) → restringido a artículos propios.
+CREATE POLICY "article_chunks_insert"
+  ON public.article_chunks
+  FOR INSERT
+  TO authenticated
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM public.articles
+      WHERE articles.id = article_chunks.article_id
+        AND articles.author_id = (SELECT auth.uid())
+    )
+  );
+
+CREATE POLICY "article_chunks_delete"
+  ON public.article_chunks
+  FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM public.articles
+      WHERE articles.id = article_chunks.article_id
+        AND articles.author_id = (SELECT auth.uid())
+    )
+  );
+
+-- Sin política UPDATE: el re-indexado reemplaza filas completas vía
+-- DELETE + INSERT, igual que likes/views/favorites.

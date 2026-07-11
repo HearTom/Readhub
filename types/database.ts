@@ -1,6 +1,7 @@
 import type { Profile, ProfileInsert, ProfileUpdate } from './user'
 import type { Article, ArticleInsert, ArticleUpdate } from './article'
 import type { Comment, CommentInsert, CommentUpdate } from './comment'
+import type { ArticleChunk, ArticleChunkInsert } from './embedding'
 
 export type Json =
   | string
@@ -147,12 +148,41 @@ export interface Database {
           }
         ]
       }
+      article_chunks: {
+        Row: ArticleChunk
+        Insert: ArticleChunkInsert
+        Update: never
+        Relationships: [
+          {
+            foreignKeyName: 'article_chunks_article_id_fkey'
+            columns: ['article_id']
+            isOneToOne: false
+            referencedRelation: 'articles'
+            referencedColumns: ['id']
+          }
+        ]
+      }
     }
     Views: Record<string, never>
     Functions: {
       is_admin: {
         Args: Record<string, never>
         Returns: boolean
+      }
+      match_article_chunks: {
+        Args: {
+          query_embedding: number[]
+          match_count?: number
+          match_threshold?: number
+        }
+        Returns: {
+          chunk_id: string
+          article_id: string
+          article_title: string
+          chunk_index: number
+          content: string
+          similarity: number
+        }[]
       }
     }
     Enums: {

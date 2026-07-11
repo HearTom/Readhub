@@ -35,19 +35,25 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl
   const isAuthPage = AUTH_PAGES.some((p) => pathname === p)
+  const isApiRoute = pathname.startsWith('/api/')
 
-  // Usuario no autenticado intentando acceder a ruta protegida → /login
-  if (!user && !isAuthPage) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
-  }
+  // Las rutas /api/* gestionan su propia autenticación y devuelven un JSON
+  // de error (401/403/etc.) — no deben recibir un redirect HTML a /login,
+  // que rompería a cualquier cliente que espere una respuesta JSON.
+  if (!isApiRoute) {
+    // Usuario no autenticado intentando acceder a ruta protegida → /login
+    if (!user && !isAuthPage) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/login'
+      return NextResponse.redirect(url)
+    }
 
-  // Usuario autenticado en páginas de auth → inicio
-  if (user && isAuthPage) {
-    const url = request.nextUrl.clone()
-    url.pathname = '/'
-    return NextResponse.redirect(url)
+    // Usuario autenticado en páginas de auth → inicio
+    if (user && isAuthPage) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/'
+      return NextResponse.redirect(url)
+    }
   }
 
   return supabaseResponse

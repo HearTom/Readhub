@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
-import { BookOpen, Upload, LogOut, Menu, X, Home } from 'lucide-react'
+import { BookOpen, Upload, LogOut, Menu, X, Home, MessageCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Separator } from '@/components/ui/separator'
@@ -54,8 +54,9 @@ export function Navbar({ userEmail }: NavbarProps) {
     .toUpperCase()
 
   const navLinks = [
-    { href: '/',       label: 'Inicio',          icon: <Home   className="h-4 w-4" /> },
-    { href: '/upload', label: 'Cargar Artículo',  icon: <Upload className="h-4 w-4" /> },
+    { href: '/',          label: 'Inicio',          icon: <Home          className="h-4 w-4" /> },
+    { href: '/upload',    label: 'Cargar Artículo', icon: <Upload        className="h-4 w-4" /> },
+    { href: '/assistant', label: 'Asistente IA',    icon: <MessageCircle className="h-4 w-4" /> },
   ]
 
   async function handleLogout() {
