@@ -1,0 +1,45 @@
+{
+  "name": "@readhub/database",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    },
+    "./client": {
+      "types": "./client.ts",
+      "default": "./client.ts"
+    },
+    "./server": {
+      "types": "./server.ts",
+      "default": "./server.ts"
+    },
+    "./embedding.service": {
+      "types": "./embedding.service.ts",
+      "default": "./embedding.service.ts"
+    },
+    "./chat.service": {
+      "types": "./chat.service.ts",
+      "default": "./chat.service.ts"
+    },
+    "./vector-search.service": {
+      "types": "./vector-search.service.ts",
+      "default": "./vector-search.service.ts"
+    },
+    "./analysis.service": {
+      "types": "./analysis.service.ts",
+      "default": "./analysis.service.ts"
+    }
+  },
+  "dependencies": {
+    "@readhub/ai": "*",
+    "@readhub/types": "*",
+    "@supabase/ssr": "^0.5.2",
+    "@supabase/supabase-js": "^2.49.4",
+    "next": "^15.3.0"
+  }
+}

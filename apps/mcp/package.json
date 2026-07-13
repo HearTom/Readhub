@@ -1,0 +1,26 @@
+{
+  "name": "@readhub/mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "scripts": {
+    "dev": "tsx --env-file-if-exists=.env src/index.ts",
+    "build": "tsc --noEmit",
+    "start": "tsx --env-file-if-exists=.env src/index.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@readhub/ai": "*",
+    "@readhub/config": "*",
+    "@readhub/database": "*",
+    "@readhub/types": "*",
+    "@supabase/supabase-js": "^2.49.4",
+    "tsx": "^4.19.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "^5"
+  }
+}
