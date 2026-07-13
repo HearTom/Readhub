@@ -82,7 +82,7 @@ function StepProgress({ step }: { step: UploadStep }) {
 export default function UploadPage() {
   const router  = useRouter()
   const { user } = useAuth()
-  const { step, loading, error, uploadArticle, reset } = useUpload(user)
+  const { step, loading, error, uploadArticle } = useUpload(user)
 
   // Redirigir al home cuando la publicación termina con éxito
   useEffect(() => {
