@@ -1,0 +1,177 @@
+name: CI
+
+# Pipeline de validación de ReadHub. Corre en cada Pull Request y en cada
+# push a main — nunca despliega nada, solo valida (typecheck, lint, pruebas
+# unitarias y E2E). Los 4 jobs corren en paralelo y son independientes entre
+# sí (fallar uno no cancela a los demás), para dar feedback lo más rápido
+# posible y con el checkpoint que falló bien identificado en la UI de PRs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Si se empuja un nuevo commit a la misma rama/PR mientras un run anterior
+# sigue corriendo, cancela el anterior — evita gastar minutos de CI en un
+# resultado que ya quedó obsoleto.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 22
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────
+  # TypeScript — typecheck de los 6 workspaces (packages/* y apps/*) vía
+  # `tsc --noEmit`, orquestado por Turborepo.
+  # ───────────────────────────────────────────────────────────────────────
+  typecheck:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (restaura caché de npm por package-lock.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Restaurar caché de Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-typecheck-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-typecheck-${{ runner.os }}-
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar TypeScript
+        run: npm run typecheck
+
+  # ───────────────────────────────────────────────────────────────────────
+  # ESLint — apps/web (único workspace con configuración de lint).
+  # ───────────────────────────────────────────────────────────────────────
+  lint:
+    name: ESLint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (restaura caché de npm por package-lock.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar ESLint
+        run: npm run lint
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Vitest — pruebas unitarias de packages/database, packages/ai, apps/mcp y
+  # apps/web, con cobertura. El reporte de cobertura se genera siempre; solo
+  # se publica como artifact descargable si el job falla.
+  # ───────────────────────────────────────────────────────────────────────
+  unit-tests:
+    name: Vitest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (restaura caché de npm por package-lock.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Restaurar caché de Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-test-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-test-${{ runner.os }}-
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar Vitest con cobertura
+        run: npm run test:coverage
+
+      - name: Publicar cobertura (solo si falló)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vitest-coverage
+          path: |
+            apps/*/coverage
+            packages/*/coverage
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # ───────────────────────────────────────────────────────────────────────
+  # Playwright — E2E de apps/web contra un servidor Next.js real (build +
+  # start) y el backend real de Supabase (usuario QA vía secrets, sin
+  # credenciales en texto plano en este archivo). Screenshots/video/trace en
+  # fallo ya configurados en apps/web/playwright.config.ts.
+  # ───────────────────────────────────────────────────────────────────────
+  e2e:
+    name: Playwright
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (restaura caché de npm por package-lock.json)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Restaurar caché de Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-e2e-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-e2e-${{ runner.os }}-
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Instalar navegadores de Playwright
+        working-directory: apps/web
+        run: npx playwright install --with-deps
+
+      - name: Ejecutar Playwright
+        run: npm run test:e2e --workspace=@readhub/web
+        env:
+          CI: true
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_USER_EMAIL: ${{ secrets.E2E_USER_EMAIL }}
+          E2E_USER_PASSWORD: ${{ secrets.E2E_USER_PASSWORD }}
+
+      - name: Publicar reporte y artefactos de Playwright (solo si falló)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14
+          if-no-files-found: ignore

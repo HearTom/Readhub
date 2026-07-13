@@ -5,6 +5,10 @@
   "type": "module",
   "main": "./index.ts",
   "types": "./index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
   "exports": {
     ".": {
       "types": "./index.ts",
