@@ -264,6 +264,16 @@ jobs:
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
 
+      # `vercel pull` escribe las variables en `.vercel/.env.production.local`,
+      # que Next.js no lee automáticamente (solo mira archivos `.env*` en la
+      # raíz del proyecto). Este job usa `next build` directo (no `vercel
+      # build`, a diferencia del job `deploy`) para que `size-limit` y
+      # `next start` sigan operando sobre `.next` estándar — por eso hace
+      # falta copiar el archivo a donde Next.js sí lo encuentra.
+      - name: Exponer variables de Vercel a next build
+        working-directory: apps/web
+        run: cp .vercel/.env.production.local .env.production.local
+
       # Production Build real (next build), el mismo que se auditará y el
       # que — si pasa los gates de abajo — se terminará desplegando.
       - name: Generar Production Build (next build)
