@@ -256,23 +256,25 @@ jobs:
       # (Production) — evita duplicar cada NEXT_PUBLIC_* como GitHub Secret
       # por separado y mantiene el build de este job alineado con el que
       # Vercel usaría. Solo lee variables, no construye ni despliega nada.
+      # Corre desde la raíz del repo (no working-directory: apps/web) porque
+      # el proyecto de Vercel tiene Root Directory = apps/web configurado en
+      # su dashboard — aplicarlo también acá vía cd duplicaría la ruta
+      # (apps/web/apps/web) y el CLI la rechaza.
       - name: Descargar variables de entorno de Vercel (Production)
-        working-directory: apps/web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
 
-      # `vercel pull` escribe las variables en `.vercel/.env.production.local`,
-      # que Next.js no lee automáticamente (solo mira archivos `.env*` en la
-      # raíz del proyecto). Este job usa `next build` directo (no `vercel
-      # build`, a diferencia del job `deploy`) para que `size-limit` y
-      # `next start` sigan operando sobre `.next` estándar — por eso hace
-      # falta copiar el archivo a donde Next.js sí lo encuentra.
+      # `vercel pull` escribe las variables en `.vercel/.env.production.local`
+      # (raíz del repo), que Next.js no lee automáticamente (solo mira
+      # archivos `.env*` en la raíz del proyecto Next, apps/web). Este job
+      # usa `next build` directo (no `vercel build`, a diferencia del job
+      # `deploy`) para que `size-limit` y `next start` sigan operando sobre
+      # `.next` estándar — por eso hace falta copiar el archivo.
       - name: Exponer variables de Vercel a next build
-        working-directory: apps/web
-        run: cp .vercel/.env.production.local .env.production.local
+        run: cp .vercel/.env.production.local apps/web/.env.production.local
 
       # Production Build real (next build), el mismo que se auditará y el
       # que — si pasa los gates de abajo — se terminará desplegando.
@@ -351,8 +353,15 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
+      # Los 3 pasos de Vercel corren desde la raíz del repo (sin
+      # working-directory: apps/web) por la misma razón que en el job
+      # `performance`: Root Directory = apps/web ya está configurado en el
+      # dashboard del proyecto, así que el CLI lo resuelve solo. Además,
+      # `vercel deploy --prebuilt` valida la existencia de cada dependencia
+      # de `node_modules` con una ruta relativa literal al CWD — como npm
+      # workspaces hoistea paquetes como @swc/helpers a la raíz del
+      # monorepo, ese chequeo fallaba si el CWD era apps/web/.
       - name: Descargar configuración y variables de entorno de Vercel (Production)
-        working-directory: apps/web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
@@ -360,14 +369,12 @@ jobs:
         run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
 
       - name: Construir artefactos para Vercel (vercel build)
-        working-directory: apps/web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: npx vercel@latest build --prod --token="$VERCEL_TOKEN"
 
       - name: Desplegar artefactos pre-construidos a producción
         id: deploy
-        working-directory: apps/web
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
         run: |
