@@ -128,33 +128,23 @@ export async function getArticle(
 
   const article = data as Article
 
-  const likesCountRes = await client
-    .from('likes')
-    .select('*', { count: 'exact', head: true })
-    .eq('article_id', id)
-
-  const viewsCountRes = await client
-    .from('views')
-    .select('*', { count: 'exact', head: true })
-    .eq('article_id', id)
-
-  let hasLiked = false
-  if (currentUserId) {
-    const userLikeRes = await client
-      .from('likes')
-      .select('id')
-      .eq('article_id', id)
-      .eq('user_id', currentUserId)
-      .maybeSingle()
-    hasLiked = userLikeRes.data !== null
-  }
+  // likes_count, views_count y has_liked no dependen entre sí — se disparan
+  // en paralelo (antes eran 3 awaits secuenciales) para que la latencia de
+  // esta página sea el máximo de las tres consultas en vez de la suma.
+  const [likesCountRes, viewsCountRes, userLikeRes] = await Promise.all([
+    client.from('likes').select('*', { count: 'exact', head: true }).eq('article_id', id),
+    client.from('views').select('*', { count: 'exact', head: true }).eq('article_id', id),
+    currentUserId
+      ? client.from('likes').select('id').eq('article_id', id).eq('user_id', currentUserId).maybeSingle()
+      : Promise.resolve({ data: null } as { data: { id: string } | null }),
+  ])
 
   return {
     data: {
       ...article,
       likes_count: likesCountRes.count ?? 0,
       views_count: viewsCountRes.count ?? 0,
-      has_liked: hasLiked,
+      has_liked: userLikeRes.data !== null,
     },
     error: null,
   }

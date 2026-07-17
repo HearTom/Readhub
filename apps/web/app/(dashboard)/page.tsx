@@ -1,5 +1,6 @@
 'use client'
 
+import { useMemo } from 'react'
 import Link from 'next/link'
 import { UploadCloud, RefreshCw } from 'lucide-react'
 import { useAuth } from '@/hooks/useAuth'
@@ -14,17 +15,26 @@ export default function HomePage() {
   const { user } = useAuth()
   const { articles, loading, error, refresh } = useArticles(user)
 
-  // Mapeo service data → ArticleCardData (formato que espera ArticleCard)
-  const cards: ArticleCardData[] = articles.map((a) => ({
-    id: a.id,
-    title: a.title,
-    summary: a.summary,
-    imageUrl: a.image_path ? getImageUrl(a.image_path) : null,
-    authorEmail: resolveAuthorDisplay(a.author_id, user),
-    createdAt: a.created_at,
-    viewsCount: a.views_count,
-    likesCount: a.likes_count,
-  }))
+  // Mapeo service data → ArticleCardData (formato que espera ArticleCard).
+  // Memoizado para que la referencia de cada objeto se mantenga estable
+  // entre renders mientras `articles`/`user` no cambien — de lo contrario
+  // el React.memo de ArticleCard no serviría, porque .map() generaría
+  // objetos nuevos (y por lo tanto re-render de todas las cards) en cada
+  // render de HomePage aunque los datos fueran los mismos.
+  const cards: ArticleCardData[] = useMemo(
+    () =>
+      articles.map((a) => ({
+        id: a.id,
+        title: a.title,
+        summary: a.summary,
+        imageUrl: a.image_path ? getImageUrl(a.image_path) : null,
+        authorEmail: resolveAuthorDisplay(a.author_id, user),
+        createdAt: a.created_at,
+        viewsCount: a.views_count,
+        likesCount: a.likes_count,
+      })),
+    [articles, user]
+  )
 
   // Skeleton solo en la carga inicial (sin datos todavía)
   const showSkeleton = loading && articles.length === 0

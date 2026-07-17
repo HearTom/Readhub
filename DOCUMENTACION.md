@@ -708,3 +708,127 @@ Variable de entorno nueva: `HF_TOKEN` (server-only, sin prefijo
   transcripciones, etc.) requeriría extender el esquema (columna
   discriminadora o tabla separada) — no fue necesario para este
   laboratorio.
+
+---
+
+## 11. Optimizaciones de Performance (Sesión 5)
+
+### 11.1 Resumen ejecutivo
+
+Se realizó una auditoría de performance de `apps/web` (Core Web Vitals,
+rendering strategy, RSC/Client Components, Server Actions, streaming,
+bundle, imágenes, fuentes, caché, re-renderizados, hooks costosos e
+hydration) y, a partir de sus hallazgos, se implementaron **únicamente**
+las optimizaciones que no requerían modificar lógica de negocio, el flujo
+RAG, las APIs, la arquitectura de renderizado ni funcionalidad existente
+— restricción explícita de esta sesión. El resto de los hallazgos de la
+auditoría (los que sí requieren esos cambios) quedó documentado como
+deuda técnica identificada, no implementada — ver 11.5.
+
+### 11.2 Optimizaciones implementadas
+
+| # | Hallazgo | Problema | Solución | Archivo(s) |
+|---|---|---|---|---|
+| A1 | Waterfall secuencial en el detalle de artículo | `getArticle()` encadenaba 3 `await` secuenciales (conteo de likes, conteo de views, chequeo de like del usuario) que no dependían entre sí | Las 3 consultas se disparan con `Promise.all` tras resolver la consulta del artículo (se preserva el corte temprano en 404) | `packages/database/article.service.ts` |
+| M1 | Re-render de todos los mensajes del chat en cada tick de "escritura" | `hooks/useChat.ts` revela la respuesta con un `setInterval` cada 15ms; sin memo, cada tick re-renderizaba **todos** los `ChatMessage` montados, no solo el que cambiaba | `ChatMessage` envuelto en `React.memo` | `apps/web/components/chat/ChatMessage.tsx` |
+| A4 (parcial) | Animaciones de scroll compitiendo entre sí en el chat | El auto-scroll llamaba `scrollIntoView({behavior:'smooth'})` en cada tick de 15ms, reiniciando una animación que compite con la anterior | Solo el primer render de un mensaje nuevo anima con `smooth`; los ticks que solo seguían el crecimiento del texto ya visible usan `auto` (sin animación) | `apps/web/components/chat/ChatWindow.tsx` |
+| B2 | Re-render de todo el feed en refrescos en segundo plano | `ArticleCard` sin memoizar, y `HomePage` reconstruía el array `cards` con `.map()` en cada render (props con referencia nueva siempre, memo inútil) | `ArticleCard` envuelto en `React.memo` + `cards` envuelto en `useMemo(() => …, [articles, user])` | `apps/web/components/cards/ArticleCard.tsx`, `apps/web/app/(dashboard)/page.tsx` |
+
+Verificación: 127/127 tests de `packages/database` en verde (incluye
+`article.service.test.ts` sin modificar), `tsc --noEmit` sin errores en
+`apps/web`, ESLint sin hallazgos en los archivos tocados.
+
+### 11.3 Impacto en Core Web Vitals
+
+- **LCP (Largest Contentful Paint)**: A1 reduce la latencia de datos de
+  `/article/[id]` de "suma de 3 round-trips" al máximo de los 3 en
+  paralelo — mejora directa de TTFB en esa ruta. El resto de las
+  optimizaciones de esta sesión no inciden en LCP porque no tocan la
+  estrategia de renderizado (ver 11.5 — esa es la palanca de mayor
+  impacto en LCP, y quedó fuera de alcance).
+- **INP (Interaction to Next Paint)**: M1, A4 y B2 apuntan todas a
+  reducir trabajo innecesario en el hilo principal durante interacciones
+  frecuentes — la conversación del asistente (`/assistant`) y el
+  refresco en segundo plano del feed (`/`). Menos re-render y menos
+  animaciones compitiendo entre sí se traduce en menos bloqueo del hilo
+  principal frente a la interacción del usuario.
+- **CLS (Cumulative Layout Shift)**: sin cambios en esta sesión — la
+  auditoría no encontró problemas de CLS (`next/image` con `sizes`
+  correcto y contenedores de altura fija, `next/font` con `display:
+  swap`), por eso no hay ninguna optimización de CLS en la lista de
+  11.2.
+
+### 11.4 Pipeline CI/CD — build, auditoría y despliegue
+
+El pipeline de GitHub Actions (`.github/workflows/ci.yml`) se extendió
+con dos jobs nuevos que corren después de que las validaciones
+existentes (`checks`, `e2e`) terminan en verde: `performance` (genera el
+Production Build, analiza el tamaño del bundle y audita Core Web
+Vitals/Lighthouse, bloqueando si no se cumplen los umbrales) y `deploy`
+(publica a Vercel solo si `checks`, `e2e` y `performance` pasaron, y solo
+en push a `main`/`master`). El detalle completo — flujo, jobs, secrets
+de Vercel requeridos y cómo interpretar los reportes — vive en
+[`.github/CI_SETUP.md`](.github/CI_SETUP.md) sección 7, para no duplicar
+la misma información en dos documentos.
+
+### 11.5 Buenas prácticas para mantener el rendimiento
+
+- **No fetchear datos en `useEffect` en páginas nuevas de `app/`** si se
+  puede resolver en un Server Component — cada página nueva del
+  dashboard que replique el patrón `'use client'` + hook con `useEffect`
+  hereda el mismo problema de LCP que ya tienen `page.tsx` y
+  `article/[id]/page.tsx` (ver 11.6, hallazgo C1, no resuelto).
+- **Paralelizar consultas independientes con `Promise.all`** en los
+  services de `packages/database` cuando se agreguen nuevas — es el
+  mismo patrón aplicado en A1; revisar que ningún `await` bloquee a otro
+  que no depende de su resultado.
+- **Memoizar listas** (`React.memo` en el item + `useMemo` en el array
+  que arma sus props) cada vez que se agregue un nuevo listado similar a
+  `ArticleList`/`ArticleCard` — sin las dos partes juntas (memo del
+  componente y memo del array de props), el memo no sirve de nada, como
+  se explica en 11.2/B2.
+- **Antes de agregar una librería nueva al bundle de `apps/web`**, correr
+  `npm run analyze:bundle --workspace=@readhub/web` localmente y
+  comparar contra el presupuesto vigente en el campo `"size-limit"` de
+  `apps/web/package.json` (350 KB JS / 50 KB CSS gzip, calibrado contra
+  el build real de esta sesión) — el pipeline lo bloquea igual, pero
+  detectarlo en local ahorra una vuelta de CI.
+- **Antes de tocar `/login` o `/register`**, correr
+  `npm run audit:lighthouse --workspace=@readhub/web` en local — son las
+  únicas rutas que el pipeline audita automáticamente (ver 11.6), así
+  que una regresión ahí se detecta recién en CI si no se prueba antes.
+- **No usar `setInterval`/`setTimeout` para animar contenido que también
+  dispara efectos** (como el revelado progresivo de `useChat.ts`) sin
+  memoizar los componentes que renderiza y sin revisar qué otros
+  `useEffect` tienen ese estado en su arreglo de dependencias — es
+  exactamente el problema que causó A4/M1.
+
+### 11.6 Decisiones y limitaciones conocidas
+
+Hallazgos de la auditoría **no implementados** en esta sesión, por
+requerir tocar arquitectura, APIs o flujo RAG (fuera de alcance
+explícito):
+
+- **Renderizado 100% client-side de las páginas de negocio** (home,
+  detalle de artículo, login, register, upload): la causa raíz de la
+  mayor parte del costo de LCP. Resolverlo implica convertir esas
+  páginas a Server Components con fetch inicial server-side — cambio de
+  arquitectura de renderizado, no una optimización puntual.
+- **`getArticles`/`getMyArticles` sin paginación**: cambiaría el
+  comportamiento visible (hoy se listan todos los artículos), se
+  consideró cambio de funcionalidad existente.
+- **Verificación de auth redundante** (middleware + layout + hook
+  cliente, hasta 3-4 round-trips por navegación): tocar el middleware es
+  tocar el flujo de sesión/seguridad — requiere alcance propio con
+  pruebas dedicadas.
+- **Sin streaming/Suspense real en las rutas**, y **sin streaming real
+  del chat** (el backend de `/api/chat` devuelve la respuesta completa;
+  el "efecto de escritura" es 100% client-side): ambos dependen de la
+  misma conversión a Server Components/Route Handlers con streaming que
+  el punto anterior.
+- **Sin `generateMetadata` dinámico por artículo**: solo puede
+  exportarse desde un Server Component — mismo bloqueo que el primer
+  punto.
+
+Estos quedan como candidatos para una sesión futura con alcance
+explícito para tocar arquitectura de renderizado.

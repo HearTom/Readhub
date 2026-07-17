@@ -11,10 +11,22 @@ import { InlineError } from '@/components/ui/states'
 export function ChatWindow() {
   const { messages, loading, error, sendMessage } = useChat()
   const scrollAnchorRef = useRef<HTMLDivElement>(null)
+  const prevMessageCountRef = useRef(0)
 
-  // Desplazamiento automático hacia el mensaje más reciente.
+  // Desplazamiento automático hacia el mensaje más reciente. `messages`
+  // cambia de referencia en cada tick de revealProgressively (~cada 15ms
+  // mientras se revela una respuesta), así que este efecto corre muy
+  // seguido — se anima con 'smooth' solo cuando aparece un mensaje nuevo;
+  // el resto de los ticks (que solo siguen el crecimiento del texto ya
+  // visible) usan 'auto' para no relanzar una animación de scroll compitiendo
+  // consigo misma decenas de veces por segundo.
   useEffect(() => {
-    scrollAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    const isNewMessage = messages.length !== prevMessageCountRef.current
+    prevMessageCountRef.current = messages.length
+    scrollAnchorRef.current?.scrollIntoView({
+      behavior: isNewMessage ? 'smooth' : 'auto',
+      block: 'end',
+    })
   }, [messages, loading])
 
   return (

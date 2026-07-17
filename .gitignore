@@ -14,6 +14,10 @@ test-results/
 blob-report/
 playwright/.cache/
 
+# lighthouse ci / bundle analysis (reportes generados en CI, ver .github/workflows/ci.yml)
+.lighthouseci/
+bundle-size-report.json
+
 # next.js
 .next/
 /out/

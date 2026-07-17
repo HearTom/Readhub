@@ -3,6 +3,11 @@
     "supabase": {
       "type": "http",
       "url": "https://mcp.supabase.com/mcp?project_ref=qpiewvxzeejknlqvggot&features=docs%2Caccount%2Cdatabase%2Cdebugging%2Cdevelopment%2Cfunctions%2Cbranching%2Cstorage"
+    },
+    "readhub": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["node_modules/tsx/dist/cli.mjs", "--env-file-if-exists=apps/mcp/.env", "apps/mcp/src/index.ts"]
     }
   }
 }

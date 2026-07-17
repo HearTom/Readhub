@@ -205,3 +205,161 @@ jobs:
       - name: Detener Supabase local
         if: always()
         run: supabase stop
+
+  # ───────────────────────────────────────────────────────────────────────
+  # PERFORMANCE — corre después de que checks (type-check/lint/Vitest) y
+  # e2e (Playwright) terminaron en verde. Genera el build de producción,
+  # audita tamaño de bundle y Core Web Vitals/Lighthouse, y actúa como gate:
+  # si algún umbral no se cumple, este job falla y por lo tanto `deploy`
+  # (que depende de él vía `needs`) nunca se ejecuta.
+  #
+  # Corre también en Pull Requests (mismos triggers que checks/e2e) para dar
+  # feedback de regresiones de performance antes del merge, sin desplegar
+  # nada — el job `deploy` es el único que publica a Vercel, y solo en push
+  # a main/master.
+  #
+  # Nota: en PRs desde forks, los Secrets de este repo no están disponibles
+  # (limitación estándar de GitHub Actions) — este job fallará en esos PRs
+  # por falta de credenciales de Vercel, no por una regresión real. No aplica
+  # a PRs desde ramas del propio repo.
+  # ───────────────────────────────────────────────────────────────────────
+  performance:
+    name: Performance (build, bundle, Lighthouse)
+    runs-on: ubuntu-latest
+    needs: [checks, e2e]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Restaurar caché de Turborepo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-
+
+      - name: Fijar la versión de npm (coincide con packageManager)
+        run: npm install -g npm@${{ env.NPM_VERSION }}
+
+      - name: Instalar dependencias (npm workspaces)
+        run: npm ci
+
+      # Descarga las variables de entorno reales del proyecto de Vercel
+      # (Production) — evita duplicar cada NEXT_PUBLIC_* como GitHub Secret
+      # por separado y mantiene el build de este job alineado con el que
+      # Vercel usaría. Solo lee variables, no construye ni despliega nada.
+      - name: Descargar variables de entorno de Vercel (Production)
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      # Production Build real (next build), el mismo que se auditará y el
+      # que — si pasa los gates de abajo — se terminará desplegando.
+      - name: Generar Production Build (next build)
+        working-directory: apps/web
+        run: npm run build
+
+      # Analiza el tamaño del JS/CSS de cliente ya generado en .next/static
+      # y falla (exit ≠ 0) si supera el presupuesto definido en el campo
+      # "size-limit" de apps/web/package.json. Un fallo acá detiene el job.
+      - name: Analizar tamaño del bundle (size-limit)
+        working-directory: apps/web
+        # Se invoca el binario directo (no via `npm run`) para que el
+        # banner que imprime `npm run` no termine mezclado con el JSON
+        # redirigido al archivo del reporte.
+        run: npx size-limit --json > bundle-size-report.json
+
+      # Sirve el build recién generado (next start) y corre Lighthouse
+      # sobre las páginas públicas que no requieren sesión (/login,
+      # /register — el resto de las rutas del dashboard exige un usuario
+      # autenticado real, fuera del alcance de esta auditoría automática).
+      # lhci autorun falla (exit ≠ 0) si algún umbral de
+      # apps/web/lighthouserc.json no se cumple.
+      - name: Auditoría de Core Web Vitals / Lighthouse
+        working-directory: apps/web
+        run: npm run audit:lighthouse
+
+      # Vuelca bundle-size-report.json + .lighthouseci/manifest.json como
+      # tabla Markdown en la pestaña "Summary" del job — para ver los
+      # números clave (tamaño de bundle, performance score, LCP/CLS/TBT) sin
+      # descargar el artefacto. Corre con `always()` para que un fallo de
+      # los gates anteriores también quede diagnosticable acá.
+      - name: Resumen de performance en el Summary de GitHub Actions
+        if: always()
+        working-directory: apps/web
+        run: node scripts/print-performance-summary.mjs
+
+      # Reporte consolidado como artefacto descargable, se sube siempre
+      # (incluso si algún gate anterior falló) para poder inspeccionar por
+      # qué — ver la sección "Cómo interpretar los reportes" en la
+      # explicación de este cambio.
+      - name: Publicar reporte de performance como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-report
+          path: |
+            apps/web/bundle-size-report.json
+            apps/web/.lighthouseci
+          retention-days: 30
+          if-no-files-found: warn
+
+  # ───────────────────────────────────────────────────────────────────────
+  # DEPLOY — únicamente en push a main/master (nunca en Pull Requests), y
+  # únicamente si checks, e2e Y performance terminaron en verde (`needs`).
+  # Usa el flujo oficial de Vercel CLI para CI/CD: vercel pull → vercel
+  # build --prod → vercel deploy --prebuilt --prod, que construye una sola
+  # vez y despliega exactamente esos artefactos (sin que Vercel vuelva a
+  # buildear del lado suyo).
+  # ───────────────────────────────────────────────────────────────────────
+  deploy:
+    name: Deploy a Vercel (Production)
+    runs-on: ubuntu-latest
+    needs: [checks, e2e, performance]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.deployment_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Descargar configuración y variables de entorno de Vercel (Production)
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Construir artefactos para Vercel (vercel build)
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx vercel@latest build --prod --token="$VERCEL_TOKEN"
+
+      - name: Desplegar artefactos pre-construidos a producción
+        id: deploy
+        working-directory: apps/web
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          url=$(npx vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "deployment_url=$url" >> "$GITHUB_OUTPUT"

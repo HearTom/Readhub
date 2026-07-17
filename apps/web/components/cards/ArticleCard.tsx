@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { Eye, Heart, Clock, BookOpen } from 'lucide-react'
@@ -44,7 +45,10 @@ function getInitials(email: string): string {
   return email.split('@')[0].slice(0, 2).toUpperCase()
 }
 
-export function ArticleCard({ article, className }: ArticleCardProps) {
+// Memoizado: la lista de artículos puede refrescarse en segundo plano
+// (ver estado "Actualizando" en HomePage) sin que cambien las props de cada
+// card individual — evita re-renderizar todo el grid cuando eso ocurre.
+export const ArticleCard = memo(function ArticleCard({ article, className }: ArticleCardProps) {
   const { id, title, summary, imageUrl, authorEmail, createdAt, viewsCount, likesCount } = article
 
   return (
@@ -115,4 +119,4 @@ export function ArticleCard({ article, className }: ArticleCardProps) {
       </div>
     </Link>
   )
-}
+})

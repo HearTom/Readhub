@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { BookOpen, User } from 'lucide-react'
 import { cn } from '@/lib/utils'
@@ -8,7 +9,10 @@ interface ChatMessageProps {
   message: ChatViewMessage
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+// Memoizado: useChat.revealProgressively actualiza `messages` cada 15ms
+// mientras se revela una respuesta — sin memo, ese tick re-renderiza TODOS
+// los ChatMessage montados (no solo el que cambia) en cada iteración.
+export const ChatMessage = memo(function ChatMessage({ message }: ChatMessageProps) {
   const isUser = message.role === 'user'
   const isRevealing =
     !isUser && message.fullContent !== undefined && message.content.length < message.fullContent.length
@@ -49,4 +53,4 @@ export function ChatMessage({ message }: ChatMessageProps) {
       </div>
     </div>
   )
-}
+})
